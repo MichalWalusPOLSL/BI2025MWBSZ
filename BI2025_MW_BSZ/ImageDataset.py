@@ -37,21 +37,32 @@ def normalize_lab(lab_color):
 
 def process_colors_for_lab_label(hex_list, num_clusters):
     lab_array, rgb_array_0_1 = convert_hex_list_to_lab_array(hex_list)
-    if lab_array is None or len(lab_array) == 0: return None, None, None, None
-    representative_lab = np.array([50.0, 0.0, 0.0]); cluster_labels = None
+    if lab_array is None or len(lab_array) == 0:
+        return None, None, None, None
+
+    # jeśli tylko jeden punkt, zwróć go od razu
     if len(lab_array) == 1:
-        representative_lab = lab_array[0]; cluster_labels = np.array([0])
-    elif 1 < len(lab_array) <= num_clusters:
-         representative_lab = np.mean(lab_array, axis=0)
-    else:
-         try:
-             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init='auto').fit(lab_array)
-             cluster_labels = kmeans.labels_
-             dominant_label = np.argmax(np.bincount(cluster_labels))
-             representative_lab = kmeans.cluster_centers_[dominant_label]
-         except Exception: representative_lab = np.mean(lab_array, axis=0)
-    return representative_lab, lab_array, rgb_array_0_1, cluster_labels
-# --- Koniec Funkcji Pomocniczych ---
+        return lab_array[0], lab_array, rgb_array_0_1, np.array([0])
+
+    # inaczej zawsze podziel na klastry
+    n_clusters = min(num_clusters, len(lab_array))
+    try:
+        kmeans = KMeans(n_clusters=n_clusters,
+                        random_state=42,
+                        n_init='auto') \
+                   .fit(lab_array)
+        labels = kmeans.labels_
+        # znajdź największy klaster
+        counts = np.bincount(labels)
+        dominant = int(np.argmax(counts))
+        center = kmeans.cluster_centers_[dominant]
+        # zwróć centroidę najliczniejszego klastra
+        return center, lab_array, rgb_array_0_1, labels
+    except Exception:
+        # na wypadek błędu - uśrednij
+        mean_lab = np.mean(lab_array, axis=0)
+        return mean_lab, lab_array, rgb_array_0_1, None
+
 
 class ImageDataset(Dataset):
     def __init__(self, images_dir, labels_dir, transform=None, num_clusters=3):
