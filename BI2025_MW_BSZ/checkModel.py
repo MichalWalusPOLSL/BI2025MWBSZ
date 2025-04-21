@@ -28,7 +28,7 @@ def convert_lab_to_hex(lab_color):
     return rgb_to_hex(rgb_0_255)
 
 IMAGES_TO_PREDICT_DIR = 'Data/PhotosToPredict'
-MODEL_LOAD_PATH = 'simple_cnn_color_lab_regression_model_lab.pth' 
+MODEL_LOAD_PATH = 'simple_cnn_color_lab_regression_model_lab.pth'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == '__main__':

@@ -77,9 +77,9 @@ if __name__ == '__main__':
     IMAGES_DIR = 'Data/PhotosColorPicker'
     LABELS_DIR = 'Data/Res_ColorPickerCustomPicker'
     MODEL_SAVE_PATH = 'best_simple_cnn_color_lab_regression_model_lab.pth'
-    BATCH_SIZE = 24
-    LEARNING_RATE = 0.001
-    NUM_EPOCHS = 15
+    BATCH_SIZE = 16
+    LEARNING_RATE = 0.0005
+    NUM_EPOCHS = 20
     N_SPLITS = 10
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     NORM_MEAN = [0.485, 0.456, 0.406]
