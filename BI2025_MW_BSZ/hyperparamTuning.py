@@ -41,7 +41,7 @@ def train_one_fold(model, train_loader, val_loader, device, num_epochs):
 
 
 def cross_val_loss(batch_size, num_epochs, n_splits=5, device='cpu'):
-    # dataset and transform (no augmentation)
+
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),

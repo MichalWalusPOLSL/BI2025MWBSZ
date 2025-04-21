@@ -40,11 +40,9 @@ def process_colors_for_lab_label(hex_list, num_clusters):
     if lab_array is None or len(lab_array) == 0:
         return None, None, None, None
 
-    # jeśli tylko jeden punkt, zwróć go od razu
     if len(lab_array) == 1:
         return lab_array[0], lab_array, rgb_array_0_1, np.array([0])
 
-    # inaczej zawsze podziel na klastry
     n_clusters = min(num_clusters, len(lab_array))
     try:
         kmeans = KMeans(n_clusters=n_clusters,
@@ -52,14 +50,11 @@ def process_colors_for_lab_label(hex_list, num_clusters):
                         n_init='auto') \
                    .fit(lab_array)
         labels = kmeans.labels_
-        # znajdź największy klaster
         counts = np.bincount(labels)
         dominant = int(np.argmax(counts))
         center = kmeans.cluster_centers_[dominant]
-        # zwróć centroidę najliczniejszego klastra
         return center, lab_array, rgb_array_0_1, labels
     except Exception:
-        # na wypadek błędu - uśrednij
         mean_lab = np.mean(lab_array, axis=0)
         return mean_lab, lab_array, rgb_array_0_1, None
 
@@ -102,7 +97,6 @@ class ImageDataset(Dataset):
         if self.transform: image = self.transform(image)
         return image, label_tensor
 
-# --- Blok Wizualizacyjny (zachowany) ---
 if __name__ == '__main__':
     import matplotlib
     matplotlib.use('TkAgg')
@@ -118,34 +112,32 @@ if __name__ == '__main__':
     if hasattr(dataset, 'image_color_details') and dataset.image_color_details:
         markers = ['o', 's', '^', 'v', 'X', 'P', '*']
         for image_path, details in dataset.image_color_details.items():
-            lab_array = details.get('lab_array') # Użyj get dla bezpieczeństwa
+            lab_array = details.get('lab_array')
             rgb_array_0_1 = details.get('rgb_array_0_1')
             cluster_labels = details.get('cluster_labels')
 
-            if lab_array is None or rgb_array_0_1 is None: continue # Pomiń, jeśli brakuje danych
+            if lab_array is None or rgb_array_0_1 is None: continue
 
             original_image = Image.open(image_path).convert('RGB')
             fig = plt.figure(figsize=(13, 6))
             ax1 = fig.add_subplot(1, 2, 1); ax1.imshow(original_image); ax1.set_title(f"{os.path.basename(image_path)}"); ax1.axis('off')
             ax2 = fig.add_subplot(1, 2, 2, projection='3d')
 
-            # Sprawdź czy klastrowanie zostało wykonane (cluster_labels nie jest None i jest wystarczająco punktów)
             if cluster_labels is not None and len(lab_array) > NUM_CLUSTERS_VIS:
                 unique_labels = np.unique(cluster_labels)
                 for i, label in enumerate(unique_labels):
                     mask = (cluster_labels == label)
                     marker = markers[i % len(markers)]
-                    # Upewnij się, że maska ma ten sam wymiar co rgb_array_0_1
                     if mask.shape[0] == rgb_array_0_1.shape[0]:
                          ax2.scatter(lab_array[mask, 1], lab_array[mask, 2], lab_array[mask, 0],
                                      c=rgb_array_0_1[mask], marker=marker, s=60,
                                      edgecolor='k', linewidth=0.5, label=f'Klaster {label}')
-                    else: # Zabezpieczenie przed niezgodnością wymiarów
+                    else:
                          ax2.scatter(lab_array[mask, 1], lab_array[mask, 2], lab_array[mask, 0],
                                      marker=marker, s=60, edgecolor='k', linewidth=0.5, label=f'Klaster {label}')
 
                 ax2.set_title(f"Klastry LAB (K={NUM_CLUSTERS_VIS}, {len(lab_array)} pkt.)")
-                if len(unique_labels) > 1: ax2.legend(fontsize='small') # Pokaż legendę tylko jeśli jest >1 klaster
+                if len(unique_labels) > 1: ax2.legend(fontsize='small')
             else:
                  ax2.scatter(lab_array[:, 1], lab_array[:, 2], lab_array[:, 0], c=rgb_array_0_1, marker='o', s=50, edgecolor='k', linewidth=0.5)
                  ax2.set_title(f"Sugestie LAB ({len(lab_array)} pkt.)")

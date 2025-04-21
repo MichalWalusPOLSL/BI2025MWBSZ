@@ -28,7 +28,7 @@ def convert_lab_to_hex(lab_color):
     return rgb_to_hex(rgb_0_255)
 
 IMAGES_TO_PREDICT_DIR = 'Data/PhotosToPredict'
-MODEL_LOAD_PATH = 'simple_cnn_color_lab_regression_model_lab.pth' # Ścieżka do modelu LAB
+MODEL_LOAD_PATH = 'simple_cnn_color_lab_regression_model_lab.pth' 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == '__main__':
@@ -46,10 +46,10 @@ if __name__ == '__main__':
             original_image = Image.open(image_path).convert('RGB')
             input_tensor = inference_transform(original_image)
             input_batch = input_tensor.unsqueeze(0).to(DEVICE)
-            with torch.no_grad(): pred_outputs_lab_norm = model(input_batch) # Wynik to znorm. LAB
+            with torch.no_grad(): pred_outputs_lab_norm = model(input_batch)
             pred_lab_norm = pred_outputs_lab_norm[0].cpu().numpy()
-            pred_lab_denorm = denormalize_lab(pred_lab_norm) # Denormalizuj LAB
-            predicted_color_hex = convert_lab_to_hex(pred_lab_denorm) # Konwertuj LAB na HEX
+            pred_lab_denorm = denormalize_lab(pred_lab_norm)
+            predicted_color_hex = convert_lab_to_hex(pred_lab_denorm)
             fig, axes = plt.subplots(1, 2, figsize=(9, 5))
             axes[0].imshow(original_image); axes[0].set_title("Oryginał"); axes[0].axis('off')
             axes[1].set_facecolor(predicted_color_hex); axes[1].set_xticks([]); axes[1].set_yticks([])
