@@ -1,7 +1,7 @@
 # checkModel.py
 import matplotlib
-#matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
+#print(matplotlib.get_backend())
 import torch
 import torch.nn as nn
 from torchvision import transforms
@@ -32,6 +32,7 @@ MODEL_LOAD_PATH = 'simple_cnn_color_lab_regression_model_lab.pth'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == '__main__':
+    plt.close('all')
     model = SimpleCNN()
     model.load_state_dict(torch.load(MODEL_LOAD_PATH, map_location=torch.device('cpu')))
     model.to(DEVICE)
@@ -54,4 +55,5 @@ if __name__ == '__main__':
             axes[0].imshow(original_image); axes[0].set_title("Oryginał"); axes[0].axis('off')
             axes[1].set_facecolor(predicted_color_hex); axes[1].set_xticks([]); axes[1].set_yticks([])
             axes[1].set_title(f"Pred (z LAB): {predicted_color_hex}")
-            plt.tight_layout(pad=2.0); plt.show(block=True)
+            plt.tight_layout(pad=2.0);
+            plt.show()

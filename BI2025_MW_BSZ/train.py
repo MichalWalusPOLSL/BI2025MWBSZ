@@ -5,15 +5,32 @@ from torch.utils.data import DataLoader, SubsetRandomSampler
 from torchvision import transforms
 from ImageDataset import ImageDataset
 from tqdm import tqdm
+import os
 import math
 import matplotlib
-matplotlib.use('TkAgg')
+#matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 from skimage.color import lab2rgb
 from sklearn.model_selection import KFold
 import copy
+
+IMAGES_DIR       = 'Data/PhotosColorPicker'
+LABELS_DIR       = 'Data/Res_ColorPickerCustomPicker'
+MODEL_SAVE_PATH  = 'best_simple_cnn_color_lab_regression_model_lab.pth'
+
+BATCH_SIZE       = 16
+LEARNING_RATE    = 0.0005
+NUM_EPOCHS       = 20
+N_SPLITS         = 10
+
+DEVICE           = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+NORM_MEAN        = [0.485, 0.456, 0.406]
+NORM_STD         = [0.229, 0.224, 0.225]
+
+IMAGE_SIZE       = 224
 
 def rgb_to_hex(rgb):
     return "#{:02x}{:02x}{:02x}".format(*(max(0, min(255, int(round(c)))) for c in rgb))
@@ -72,21 +89,51 @@ def denormalize_img(tensor, mean, std):
     tensor = tensor * std + mean
     return torch.clamp(tensor, 0, 1)
 
-if __name__ == '__main__':
+def train_one_fold(fold, train_idx, val_idx, dataset):
+    # przygotowanie DataLoaderów
+    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
+                              sampler=SubsetRandomSampler(train_idx), num_workers=4)
+    val_loader   = DataLoader(dataset, batch_size=BATCH_SIZE,
+                              sampler=SubsetRandomSampler(val_idx),   num_workers=4)
 
-    IMAGES_DIR = 'Data/PhotosColorPicker'
-    LABELS_DIR = 'Data/Res_ColorPickerCustomPicker'
-    MODEL_SAVE_PATH = 'best_simple_cnn_color_lab_regression_model_lab.pth'
-    BATCH_SIZE = 16
-    LEARNING_RATE = 0.0005
-    NUM_EPOCHS = 20
-    N_SPLITS = 10
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    NORM_MEAN = [0.485, 0.456, 0.406]
-    NORM_STD = [0.229, 0.224, 0.225]
-    IMAGE_SIZE = 224
+    model     = SimpleCNN().to(DEVICE)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
+    best_val = float('inf')
+    best_wts = None
 
+    for epoch in range(1, NUM_EPOCHS + 1):
+        model.train()
+        running_loss = 0.0
+        for inputs, labels in tqdm(train_loader, desc=f"[Fold {fold}] Epoch {epoch}", leave=False):
+            inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item() * inputs.size(0)
+        train_loss = running_loss / len(train_idx)
+
+        model.eval()
+        val_loss_total = 0.0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+                outputs = model(inputs)
+                val_loss_total += criterion(outputs, labels).item() * inputs.size(0)
+        val_loss = val_loss_total / len(val_idx)
+
+        print(f"Fold {fold}, Epoch {epoch}/{NUM_EPOCHS} → Train: {train_loss:.6f}, Val: {val_loss:.6f}")
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_wts = copy.deepcopy(model.state_dict())
+
+    return best_val, best_wts
+
+def main():
     transform = transforms.Compose([
         transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
         transforms.ToTensor(),
@@ -94,64 +141,32 @@ if __name__ == '__main__':
     ])
     dataset = ImageDataset(IMAGES_DIR, LABELS_DIR, transform)
 
-
     kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
-    best_val_loss = float('inf')
-    best_model_wts = None
+    splits = list(kf.split(dataset))
+
+    best_overall = float('inf')
+    best_weights = None
     best_fold = -1
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(dataset), 1):
-        print(f"\nStarting fold {fold}/{N_SPLITS}")
+    for i, (tr_idx, vl_idx) in enumerate(splits, start=1):
+        print(f"\n=== Rozpoczynam fold {i}/{N_SPLITS} ===")
+        val_loss, wts = train_one_fold(i, tr_idx, vl_idx, dataset)
+        if val_loss < best_overall:
+            best_overall = val_loss
+            best_weights = wts
+            best_fold = i
 
-        train_sampler = SubsetRandomSampler(train_idx)
-        val_sampler = SubsetRandomSampler(val_idx)
-        train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=train_sampler, num_workers=0)
-        val_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=val_sampler, num_workers=0)
-
-
-        model = SimpleCNN().to(DEVICE)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-
-
-        for epoch in range(1, NUM_EPOCHS + 1):
-            model.train()
-            running_loss = 0.0
-            for inputs, labels_lab in tqdm(train_loader, desc=f"Fold {fold} Training Epoch {epoch}", leave=False):
-                inputs, labels_lab = inputs.to(DEVICE), labels_lab.to(DEVICE)
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                loss = criterion(outputs, labels_lab)
-                loss.backward()
-                optimizer.step()
-                running_loss += loss.item() * inputs.size(0)
-            train_loss = running_loss / len(train_idx)
-
-
-            model.eval()
-            val_loss_total = 0.0
-            with torch.no_grad():
-                for inputs, labels_lab in val_loader:
-                    inputs, labels_lab = inputs.to(DEVICE), labels_lab.to(DEVICE)
-                    outputs = model(inputs)
-                    loss = criterion(outputs, labels_lab)
-                    val_loss_total += loss.item() * inputs.size(0)
-            val_loss = val_loss_total / len(val_idx)
-
-            print(f"Fold {fold}, Epoch {epoch}/{NUM_EPOCHS}, Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
-
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_model_wts = copy.deepcopy(model.state_dict())
-                best_fold = fold
-
-
-    if best_model_wts is not None:
-        print(f"\nBest model found in fold {best_fold} with Val Loss: {best_val_loss:.6f}")
+    if best_weights is not None:
+        print(f"\nNajlepszy model: fold {best_fold} z Val Loss = {best_overall:.6f}")
         best_model = SimpleCNN().to(DEVICE)
-        best_model.load_state_dict(best_model_wts)
+        best_model.load_state_dict(best_weights)
+        dirpath = os.path.dirname(MODEL_SAVE_PATH)
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
         torch.save(best_model.state_dict(), MODEL_SAVE_PATH)
-        print(f"Saved best model to {MODEL_SAVE_PATH}")
+        print(f"Zapisano model do: {MODEL_SAVE_PATH}")
     else:
-        print("No best model found to save.")
+        print("Nie znaleziono żadnego modelu do zapisania.")
+
+if __name__ == '__main__':
+    main()
