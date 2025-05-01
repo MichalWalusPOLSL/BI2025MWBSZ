@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data import DataLoader, SubsetRandomSampler, Subset
+from AugmentedDataset import AugmentedDataset
 from torchvision import transforms
 from ImageDataset import ImageDataset
 from tqdm import tqdm
@@ -20,7 +21,7 @@ IMAGES_DIR       = 'Data/PhotosColorPicker'
 LABELS_DIR       = 'Data/Res_ColorPickerCustomPicker'
 MODEL_SAVE_PATH  = 'best_simple_cnn_color_lab_regression_model_lab.pth'
 
-BATCH_SIZE       = 16
+BATCH_SIZE       = 32
 LEARNING_RATE    = 0.0005
 NUM_EPOCHS       = 20
 N_SPLITS         = 10
@@ -89,12 +90,15 @@ def denormalize_img(tensor, mean, std):
     tensor = tensor * std + mean
     return torch.clamp(tensor, 0, 1)
 
-def train_one_fold(fold, train_idx, val_idx, dataset):
-    # przygotowanie DataLoaderów
-    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
-                              sampler=SubsetRandomSampler(train_idx), num_workers=4)
-    val_loader   = DataLoader(dataset, batch_size=BATCH_SIZE,
-                              sampler=SubsetRandomSampler(val_idx),   num_workers=4)
+def train_one_fold(fold, train_idx, val_idx, base_dataset):
+    train_base = Subset(base_dataset, train_idx)
+    train_ds = AugmentedDataset(train_base)
+    val_ds = Subset(base_dataset, val_idx)
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
+                              shuffle=True, num_workers=4)
+    val_loader   = DataLoader(val_ds, batch_size=BATCH_SIZE,
+                              shuffle=False,   num_workers=4)
 
     model     = SimpleCNN().to(DEVICE)
     criterion = nn.MSELoss()
@@ -114,7 +118,7 @@ def train_one_fold(fold, train_idx, val_idx, dataset):
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * inputs.size(0)
-        train_loss = running_loss / len(train_idx)
+        train_loss = running_loss / len(train_loader.dataset)
 
         model.eval()
         val_loss_total = 0.0
@@ -123,7 +127,7 @@ def train_one_fold(fold, train_idx, val_idx, dataset):
                 inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
                 outputs = model(inputs)
                 val_loss_total += criterion(outputs, labels).item() * inputs.size(0)
-        val_loss = val_loss_total / len(val_idx)
+        val_loss = val_loss_total / len(val_loader.dataset)
 
         print(f"Fold {fold}, Epoch {epoch}/{NUM_EPOCHS} → Train: {train_loss:.6f}, Val: {val_loss:.6f}")
 
