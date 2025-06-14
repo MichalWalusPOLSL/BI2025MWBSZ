@@ -1,114 +1,183 @@
-# train.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SubsetRandomSampler, Subset
+from AugmentedDataset import AugmentedDataset
 from torchvision import transforms
-from ImageDataset import ImageDataset
+from ImageDataset import UnifiedColorDataset
 from tqdm import tqdm
+import os
 import math
 import matplotlib
-matplotlib.use('TkAgg')
+#matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+from skimage.color import lab2rgb
+from sklearn.model_selection import KFold
+import copy
 
-# Funkcja hex_to_rgb potrzebna do wizualizacji koloru tekstu na patchu
-def hex_to_rgb(h):
-    h = h.lstrip('#')
-    if len(h) != 6: return (0, 0, 0) # Zwróć czarny w razie błędu
-    try: return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-    except ValueError: return (0, 0, 0)
+IMAGES_DIR       = 'Data/PhotosColorPicker'
+LABELS_DIR       = 'Data/Res_ColorPickerCustomPicker'
+MODEL_SAVE_PATH  = 'best_simple_cnn_color_lab_regression_model_lab.pth'
+
+BATCH_SIZE       = 32
+LEARNING_RATE    = 0.0005
+NUM_EPOCHS       = 5
+N_SPLITS         = 2
+
+DEVICE           = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+NORM_MEAN        = [0.485, 0.456, 0.406]
+NORM_STD         = [0.229, 0.224, 0.225]
+
+IMAGE_SIZE       = 224
+
+MODE             = '1color'
+NUM_CLUSTERS     = 3
+
+
+def rgb_to_hex(rgb):
+    return "#{:02x}{:02x}{:02x}".format(*(max(0, min(255, int(round(c)))) for c in rgb))
+
+def denormalize_lab(lab_norm):
+    l = lab_norm[0] * 100.0
+    a = lab_norm[1] * 255.0 - 128.0
+    b = lab_norm[2] * 255.0 - 128.0
+    return np.array([l, a, b])
+
+def convert_lab_to_hex(lab_color):
+    rgb_0_1 = lab2rgb(np.array(lab_color).reshape(1, 1, 3)).flatten()
+    rgb_0_1_clipped = np.clip(rgb_0_1, 0, 1)
+    rgb_0_255 = tuple(max(0, min(255, int(round(c * 255.0)))) for c in rgb_0_1_clipped)
+    return rgb_to_hex(rgb_0_255)
+
 
 class SimpleCNN(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self):
         super(SimpleCNN, self).__init__()
-        self.conv_block1 = nn.Sequential(nn.Conv2d(3, 16, 3, 1, 1), nn.ReLU(), nn.MaxPool2d(2, 2))
-        self.conv_block2 = nn.Sequential(nn.Conv2d(16, 32, 3, 1, 1), nn.ReLU(), nn.MaxPool2d(2, 2))
-        self.conv_block3 = nn.Sequential(nn.Conv2d(32, 64, 3, 1, 1), nn.ReLU(), nn.MaxPool2d(2, 2))
-        self.classifier = nn.Sequential(nn.Flatten(), nn.Linear(64*28*28, 512), nn.ReLU(), nn.Dropout(0.5), nn.Linear(512, num_classes))
+        self.conv_block1 = nn.Sequential(
+            nn.Conv2d(3, 16, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)
+        )
+        self.conv_block2 = nn.Sequential(
+            nn.Conv2d(16, 32, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)
+        )
+        self.conv_block3 = nn.Sequential(
+            nn.Conv2d(32, 64, 3, 1, 1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 28 * 28, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, 3),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        x = self.conv_block1(x); x = self.conv_block2(x); x = self.conv_block3(x)
-        x = self.classifier(x); return x
+        x = self.conv_block1(x)
+        x = self.conv_block2(x)
+        x = self.conv_block3(x)
+        x = self.classifier(x)
+        return x
 
-def denormalize(tensor, mean, std):
+def denormalize_img(tensor, mean, std):
     mean = torch.tensor(mean).view(3, 1, 1)
     std = torch.tensor(std).view(3, 1, 1)
-    if tensor.is_cuda: mean, std = mean.to(tensor.device), std.to(tensor.device)
+    if tensor.is_cuda:
+        mean, std = mean.to(tensor.device), std.to(tensor.device)
     tensor = tensor * std + mean
     return torch.clamp(tensor, 0, 1)
 
-if __name__ == '__main__':
-    IMAGES_DIR = 'Data/PhotosColorPicker'
-    LABELS_DIR = 'Data/Res_ColorPickerCustomPicker'
-    MODEL_SAVE_PATH = 'simple_cnn_color_model.pth'
-    BATCH_SIZE = 16
-    LEARNING_RATE = 0.001
-    NUM_EPOCHS = 15
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    NORM_MEAN = [0.485, 0.456, 0.406]; NORM_STD = [0.229, 0.224, 0.225]
-    image_size = 224
+def train_one_fold(fold, train_idx, val_idx, base_dataset):
+    train_base = Subset(base_dataset, train_idx)
+    train_ds = AugmentedDataset(train_base)
+    val_ds = Subset(base_dataset, val_idx)
 
-    train_transform = transforms.Compose([
-        transforms.Resize((image_size, image_size)), transforms.ToTensor(),
-        transforms.Normalize(mean=NORM_MEAN, std=NORM_STD)])
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
+                              shuffle=True, num_workers=4)
+    val_loader   = DataLoader(val_ds, batch_size=BATCH_SIZE,
+                              shuffle=False,   num_workers=4)
 
-    dataset = ImageDataset(images_dir=IMAGES_DIR, labels_dir=LABELS_DIR, transform=train_transform)
+    model     = SimpleCNN().to(DEVICE)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    if len(dataset) > 0 and dataset.num_classes > 0 and hasattr(dataset, 'idx_to_color'):
-        train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-        model = SimpleCNN(num_classes=dataset.num_classes).to(DEVICE)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    best_val = float('inf')
+    best_wts = None
 
-        for epoch in range(NUM_EPOCHS):
-            model.train(); running_loss = 0.0; correct_predictions = 0; total_predictions = 0
-            progress_bar = tqdm(train_loader, desc=f"E: {epoch+1}/{NUM_EPOCHS}", leave=False, unit="b")
-            for inputs, labels in progress_bar:
-                 inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
-                 optimizer.zero_grad(); outputs = model(inputs); loss = criterion(outputs, labels)
-                 loss.backward(); optimizer.step()
-                 running_loss += loss.item() * inputs.size(0); _, predicted = torch.max(outputs.data, 1)
-                 total_predictions += labels.size(0); correct_predictions += (predicted == labels).sum().item()
-                 progress_bar.set_postfix(loss=f"{loss.item():.4f}")
+    for epoch in range(1, NUM_EPOCHS + 1):
+        model.train()
+        running_loss = 0.0
+        for inputs, labels in tqdm(train_loader, desc=f"[Fold {fold}] Epoch {epoch}", leave=False):
+            inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item() * inputs.size(0)
+        train_loss = running_loss / len(train_loader.dataset)
 
-            epoch_loss = running_loss / total_predictions
-            epoch_acc = correct_predictions / total_predictions
-            print(f"E: {epoch+1}/{NUM_EPOCHS}, Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}")
-
-        # --- WIZUALIZACJA PO TRENINGU ---
         model.eval()
-        num_to_show = min(BATCH_SIZE, 9)
-        vis_batch_inputs, _ = next(iter(train_loader)) 
-        vis_batch_inputs = vis_batch_inputs.to(DEVICE)
+        val_loss_total = 0.0
         with torch.no_grad():
-            outputs = model(vis_batch_inputs)
-            probabilities = torch.softmax(outputs, dim=1)
-            confidences, predicted_indices = torch.max(probabilities, 1)
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+                outputs = model(inputs)
+                val_loss_total += criterion(outputs, labels).item() * inputs.size(0)
+        val_loss = val_loss_total / len(val_loader.dataset)
 
-        rows = int(math.ceil(num_to_show / 3.0)); cols = 3
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3.5))
-        if rows * cols == 1: axes = np.array([axes])
-        axes = axes.flatten()
+        print(f"Fold {fold}, Epoch {epoch}/{NUM_EPOCHS} → Train: {train_loss:.6f}, Val: {val_loss:.6f}")
 
-        for i in range(num_to_show):
-            if i >= len(vis_batch_inputs): break
-            img_tensor = vis_batch_inputs[i].cpu()
-            pred_idx = predicted_indices[i].item(); confidence = confidences[i].item()
-            img_vis = denormalize(img_tensor, NORM_MEAN, NORM_STD)
-            img_vis_np = img_vis.permute(1, 2, 0).numpy()
-            predicted_color_hex = dataset.idx_to_color.get(pred_idx, "#000000")
-            ax = axes[i]; ax.imshow(img_vis_np)
-            patch_height = 20 # Wysokość paska koloru
-            rect = patches.Rectangle((0, 0), image_size, patch_height, transform=ax.transData, facecolor=predicted_color_hex, edgecolor='k', lw=0.5)
-            ax.add_patch(rect)
-            text_color = 'white' if sum(hex_to_rgb(predicted_color_hex)) < 382 else 'black'
-            ax.text(image_size / 2, patch_height / 2, f"{predicted_color_hex} ({confidence:.1f})", ha='center', va='center', color=text_color, fontsize=8, transform=ax.transData)
-            ax.axis('off')
+        if val_loss < best_val:
+            best_val = val_loss
+            best_wts = copy.deepcopy(model.state_dict())
 
-        for j in range(num_to_show, len(axes)): axes[j].axis('off')
-        plt.tight_layout(pad=0.5); plt.show()
-        # --- KONIEC WIZUALIZACJI ---
+    return best_val, best_wts
 
-        torch.save(model.state_dict(), MODEL_SAVE_PATH)
+def main():
+    transform = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=NORM_MEAN, std=NORM_STD)
+    ])
+
+    dataset = UnifiedColorDataset(images_dir=IMAGES_DIR, labels_dir=LABELS_DIR,
+                                  transform=transform, mode=MODE, num_clusters=NUM_CLUSTERS)
+
+    kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
+    splits = list(kf.split(dataset))
+
+    best_overall = float('inf')
+    best_weights = None
+    best_fold = -1
+
+    for i, (tr_idx, vl_idx) in enumerate(splits, start=1):
+        print(f"\n=== Rozpoczynam fold {i}/{N_SPLITS} ===")
+        val_loss, wts = train_one_fold(i, tr_idx, vl_idx, dataset)
+        if val_loss < best_overall:
+            best_overall = val_loss
+            best_weights = wts
+            best_fold = i
+
+    if best_weights is not None:
+        print(f"\nNajlepszy model: fold {best_fold} z Val Loss = {best_overall:.6f}")
+        best_model = SimpleCNN().to(DEVICE)
+        best_model.load_state_dict(best_weights)
+        dirpath = os.path.dirname(MODEL_SAVE_PATH)
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
+        torch.save(best_model.state_dict(), MODEL_SAVE_PATH)
+        print(f"Zapisano model do: {MODEL_SAVE_PATH}")
+    else:
+        print("Nie znaleziono żadnego modelu do zapisania.")
+
+if __name__ == '__main__':
+    main()
